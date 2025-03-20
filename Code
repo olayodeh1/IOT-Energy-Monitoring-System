@@ -1,0 +1,186 @@
+// Define Blynk template ID, name, and authentication token
+#define BLYNK_TEMPLATE_ID "TMPL2l3WaBYii"
+#define BLYNK_TEMPLATE_NAME "Energy Monitoring System"
+#define BLYNK_AUTH_TOKEN "n2scNpJo0NVJyZ1KBoByBlhFQuMCRlGx"
+
+// Include necessary libraries
+#include <BlynkSimpleEsp32.h> // For Blynk IoT integration
+#include <Wire.h>             // For I2C communication
+#include <LiquidCrystal_I2C.h> // For LCD display
+#include <OneWire.h>          // For DS18B20 temperature sensor
+#include <DallasTemperature.h> // For DS18B20 temperature sensor
+
+// WiFi credentials
+char ssid[] = "*********";  // Replace with your WiFi SSID
+char pass[] = "**********";  // Replace with your WiFi password
+
+// Blynk setup
+char auth[] = BLYNK_AUTH_TOKEN; // Blynk authentication token
+BlynkTimer timer; // Timer for Blynk
+
+// LCD setup (I2C address, columns, rows)
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+// DS18B20 temperature sensor setup
+#define ONE_WIRE_BUS 4 // Pin for DS18B20 data
+OneWire oneWire(ONE_WIRE_BUS); // OneWire instance
+DallasTemperature sensors(&oneWire); // DallasTemperature instance
+
+// Relay pin
+#define relayPin 26 // Pin to control the relay
+
+// ACS712 current sensor pin and sensitivity
+const int currentSensorPin = 34; // Pin for current sensor
+float sensitivity = -185.0; // Sensitivity for ACS712-5B (185 mV/A)
+
+// KS0275 Voltage Sensor setup
+#define VOLTAGE_SENSOR_PIN 35 // Pin for voltage sensor
+float voltageSensorScale = 5.0; // Scaling factor for KS0275
+
+// Variables for energy calculation
+float totalEnergy = 0; // Total energy consumed (in watt-hours)
+unsigned long lastTime = 0; // Last time energy was calculated
+unsigned long currentTime = 0; // Current time
+
+// Bitmaps for custom LCD icons
+byte solar[8] = { 0b11111, 0b10101, 0b11111, 0b10101, 0b11111, 0b10101, 0b11111, 0b00000 }; // Solar icon
+byte currentBitmap[8] = { 0b00100, 0b01110, 0b10101, 0b00100, 0b00100, 0b01010, 0b11011, 0b00100 }; // Current icon
+byte temp[8] = { 0b00100, 0b01010, 0b01010, 0b01110, 0b01110, 0b11111, 0b11111, 0b01110 }; // Temperature icon
+byte power[8] = { 0b00010, 0b00100, 0b01000, 0b11111, 0b00010, 0b00100, 0b01000, 0b00000 }; // Power icon
+byte energy[8] = { 0b00000, 0b00100, 0b01010, 0b10001, 0b11111, 0b00100, 0b01110, 0b11111 }; // Energy icon
+byte chargingIcon[8] = { 0b00100, 0b00100, 0b01110, 0b10101, 0b00100, 0b00100, 0b00000, 0b00000 }; // Charging icon
+byte notChargingIcon[8] = { 0b00000, 0b00000, 0b01110, 0b10001, 0b10101, 0b10001, 0b01110, 0b00000 }; // Not charging icon
+
+void setup() {
+  Serial.begin(115200); // Initialize serial communication
+  pinMode(relayPin, OUTPUT); // Set relay pin as output
+  digitalWrite(relayPin, HIGH); // Turn off the relay initially
+
+  // Initialize Blynk
+  Blynk.begin(auth, ssid, pass);
+
+  // Initialize lastTime
+  lastTime = millis();
+
+  // Initialize the LCD
+  lcd.init();
+  lcd.backlight();
+
+  // Load custom bitmaps into the LCD memory
+  lcd.createChar(0, solar);
+  lcd.createChar(1, currentBitmap);
+  lcd.createChar(2, temp);
+  lcd.createChar(3, power);
+  lcd.createChar(4, energy);
+  lcd.createChar(5, chargingIcon);
+  lcd.createChar(6, notChargingIcon);
+
+  // Initialize DS18B20 temperature sensor
+  sensors.begin();
+
+  // Display startup message
+  lcd.setCursor(0, 0);
+  lcd.print("Initializing...");
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  // Run Blynk
+  Blynk.run();
+
+  // Measure Temperature
+  sensors.requestTemperatures();
+  float temperature = sensors.getTempCByIndex(0);
+
+  // Measure Voltage using KS0275
+  int sensorValue = analogRead(VOLTAGE_SENSOR_PIN);
+  float sensorVoltage = (sensorValue * 3.3) / 4095.0; // Convert analog reading to voltage
+  float voltage = sensorVoltage * voltageSensorScale; // Adjust according to sensor's scaling factor
+
+  // Measure Current using ACS712-5B
+  int currentRaw = analogRead(currentSensorPin);
+  float currentVoltage = (currentRaw * 3.3) / 4095.0; // Convert analog reading to voltage
+  float current = (currentVoltage - 2.5) / (sensitivity / 1000.0); // Convert voltage to current
+
+  // Calculate Power
+  float powerValue = voltage * current;
+
+  // Get the current time
+  currentTime = millis();
+
+  // Calculate the time elapsed (in hours)
+  float timeElapsed = (currentTime - lastTime) / 3600000.0; // Time in hours
+
+  // Calculate energy (E = P * t)
+  totalEnergy += powerValue * timeElapsed; // Energy in watt-hours (Wh)
+
+  // Update lastTime
+  lastTime = currentTime;
+
+  // Display data on LCD
+  lcd.clear();
+
+  // Check if the solar panel is connected
+  if (voltage > 0) {
+    // Solar panel is connected, display the charging icon
+    lcd.setCursor(0, 3);
+    lcd.write(byte(5)); // Charging icon
+  } else {
+    // Solar panel is not connected, display the not charging icon
+    lcd.setCursor(0, 3);
+    lcd.write(byte(6)); // Not charging icon
+  }
+
+  // Send the value to the Blynk app
+  Blynk.virtualWrite(V0, voltage);
+  Blynk.virtualWrite(V1, current);
+  Blynk.virtualWrite(V2, temperature);
+  Blynk.virtualWrite(V3, powerValue);
+  Blynk.virtualWrite(V4, totalEnergy);
+
+  // Control the relay based on voltage
+  if (voltage <= 2.5) {
+    digitalWrite(relayPin, HIGH);  // Turn off the relay
+  } else {
+    digitalWrite(relayPin, LOW); // Turn on the relay
+  }
+
+  // Display voltage on LCD
+  lcd.setCursor(0, 0);
+  lcd.write(byte(0)); // Solar icon
+  lcd.print(" ");
+  lcd.print(voltage, 1);
+  lcd.print(" V");
+
+  // Display current on LCD
+  lcd.setCursor(10, 0);
+  lcd.write(byte(1)); // Current icon
+  lcd.print(" ");
+  lcd.print(current, 1);
+  lcd.print(" A");
+
+  // Display temperature on LCD
+  lcd.setCursor(0, 1);
+  lcd.write(byte(2)); // Temperature icon
+  lcd.print(" ");
+  lcd.print(temperature, 1);
+  lcd.print(" C");
+
+  // Display power on LCD
+  lcd.setCursor(10, 1);
+  lcd.write(byte(3)); // Power icon
+  lcd.print(" ");
+  lcd.print(powerValue, 1);
+  lcd.print(" W");
+
+  // Display energy on LCD
+  lcd.setCursor(0, 2);
+  lcd.write(byte(4)); // Energy icon
+  lcd.print(" ");
+  lcd.print(totalEnergy, 1);
+  lcd.print(" Wh");
+
+  delay(5000); // Update display every 5 seconds
+  timer.run();
+}
